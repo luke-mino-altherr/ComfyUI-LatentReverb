@@ -37,7 +37,7 @@ homepage = "https://github.com/luke-mino-altherr/latent_reverb"
 
 
 [tool.comfy]
-PublisherId = "luke-mino-altherr"
+PublisherId = "luke"
 DisplayName = "ComfyUI-Latent-Reverb"
 Icon = ""
 
