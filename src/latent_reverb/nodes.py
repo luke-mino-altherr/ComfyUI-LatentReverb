@@ -144,47 +144,45 @@ class LatentReverbNode:
 
     @classmethod
     def INPUT_TYPES(cls):
-        return (
-            {
-                "required": {
-                    "samples": ("LATENT",),
-                    "wet_mix": (
-                        "FLOAT",
-                        {
-                            "default": 0.3,
-                            "min": 0.0,
-                            "max": 1.0,
-                            "step": 0.01,
-                            "display": "slider",
-                        },
-                    ),
-                    "feedback": (
-                        "FLOAT",
-                        {
-                            "default": 0.4,
-                            "min": 0.0,
-                            "max": 0.8,
-                            "step": 0.01,
-                            "display": "slider",
-                        },
-                    ),
-                    "room_size": (
-                        "FLOAT",
-                        {
-                            "default": 0.5,
-                            "min": 0.1,
-                            "max": 2.0,
-                            "step": 0.1,
-                            "display": "slider",
-                        },
-                    ),
-                    "num_reflections": (
-                        "INT",
-                        {"default": 8, "min": 2, "max": 16, "step": 1},
-                    ),
-                }
-            },
-        )
+        return {
+            "required": {
+                "samples": ("LATENT",),
+                "wet_mix": (
+                    "FLOAT",
+                    {
+                        "default": 0.3,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "display": "slider",
+                    },
+                ),
+                "feedback": (
+                    "FLOAT",
+                    {
+                        "default": 0.4,
+                        "min": 0.0,
+                        "max": 0.8,
+                        "step": 0.01,
+                        "display": "slider",
+                    },
+                ),
+                "room_size": (
+                    "FLOAT",
+                    {
+                        "default": 0.5,
+                        "min": 0.1,
+                        "max": 2.0,
+                        "step": 0.1,
+                        "display": "slider",
+                    },
+                ),
+                "num_reflections": (
+                    "INT",
+                    {"default": 8, "min": 2, "max": 16, "step": 1},
+                ),
+            }
+        }
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "apply_reverb"
