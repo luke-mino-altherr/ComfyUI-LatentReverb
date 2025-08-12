@@ -252,7 +252,7 @@ class TestLatentReverbNode:
         """Test node metadata."""
         assert LatentReverbNode.RETURN_TYPES == ("LATENT",)
         assert LatentReverbNode.FUNCTION == "apply_reverb"
-        assert LatentReverbNode.CATEGORY == "latent/effects"
+        assert LatentReverbNode.CATEGORY == "latent/transform"
 
     def test_initialization(self, reverb_node):
         """Test node initialization."""
