@@ -46,30 +46,50 @@ class LatentReverb(nn.Module):
         )
 
     def create_delay_line(self, x: torch.Tensor, delay: float) -> torch.Tensor:
-        """Create delayed version using fractional delay interpolation"""
+        """Create delayed version using actual spatial shifting instead of convolution"""
         b, c, h, w = x.shape
 
-        # Integer and fractional parts
-        delay_int = int(delay)
-        delay_frac = delay - delay_int
+        # Convert delay parameter to meaningful pixel shifts
+        # Multiply delay by 4 for x-axis, by 2 for y-axis for more noticeable effect
+        x_shift = int(delay * 4)
+        y_shift = int(delay * 2)
 
-        if delay_int == 0:
+        if x_shift == 0 and y_shift == 0:
             return x
 
-        # Spatial delay using convolution with learned kernels
-        kernel_size = min(delay_int * 2 + 1, 7)
-        padding = kernel_size // 2
+        # Use torch.roll to actually shift the tensor spatially
+        shifted = torch.roll(x, shifts=(y_shift, x_shift), dims=(2, 3))
 
-        # Create Gaussian-like delay kernel
-        kernel = torch.exp(-torch.linspace(-2, 2, kernel_size).pow(2))
-        kernel = kernel / kernel.sum()
-        kernel = kernel.view(1, 1, kernel_size, 1).to(x.device)
+        # Create fade mask for shifted regions to make the effect more natural
+        # This creates a gradual fade at the edges where the roll wraps around
+        fade_width = min(2, min(h, w) // 16)  # Very small fade width for minimal effect
 
-        # Apply spatial delay
-        delayed = F.conv2d(x.view(-1, 1, h, w), kernel, padding=(padding, 0), groups=1)
-        delayed = delayed.view(b, c, h, w)
+        if fade_width > 0:
+            # Create fade mask for height (y-axis)
+            if y_shift != 0:
+                y_fade = torch.ones(h, device=x.device)
+                y_fade[:fade_width] = torch.linspace(
+                    0.8, 1.0, fade_width, device=x.device
+                )  # Less aggressive fade
+                y_fade[-fade_width:] = torch.linspace(
+                    1.0, 0.8, fade_width, device=x.device
+                )
+                y_fade = y_fade.view(1, 1, h, 1)
+                shifted = shifted * y_fade
 
-        return delayed
+            # Create fade mask for width (x-axis)
+            if x_shift != 0:
+                x_fade = torch.ones(w, device=x.device)
+                x_fade[:fade_width] = torch.linspace(
+                    0.8, 1.0, fade_width, device=x.device
+                )  # Less aggressive fade
+                x_fade[-fade_width:] = torch.linspace(
+                    1.0, 0.8, fade_width, device=x.device
+                )
+                x_fade = x_fade.view(1, 1, 1, w)
+                shifted = shifted * x_fade
+
+        return shifted
 
     def forward(
         self,
@@ -90,8 +110,8 @@ class LatentReverb(nn.Module):
         b, c, h, w = x.shape
         dry_signal = x.clone()
 
-        # Scale delays by room size
-        scaled_delays = self.reflection_delays * room_size
+        # Scale delays by room size - multiply by additional factor of 3.0 for more dramatic effect
+        scaled_delays = self.reflection_delays * room_size * 3.0
 
         # Initialize accumulator
         wet_signal = torch.zeros_like(x)
@@ -104,8 +124,8 @@ class LatentReverb(nn.Module):
         for i in range(self.num_reflections):
             delay = scaled_delays[i]
             weight = torch.sigmoid(self.reflection_weights[i]) * (
-                0.8**i
-            )  # Natural decay
+                0.6**i
+            )  # Slower decay for stronger reflections
 
             # Create delayed reflection
             reflection = self.create_delay_line(feedback_buffer, delay)
@@ -117,11 +137,11 @@ class LatentReverb(nn.Module):
             damping = self.dampen_net(reflection)
             reflection = reflection * damping
 
-            # Accumulate weighted reflection
-            wet_signal = wet_signal + reflection * weight
+            # Accumulate weighted reflection with 2.0 multiplier for stronger effect
+            wet_signal = wet_signal + reflection * weight * 2.0
 
-            # Update feedback buffer with some of the reflection
-            feedback_buffer = feedback_buffer + reflection * feedback * 0.1
+            # Update feedback buffer with some of the reflection - increased from 0.1 to 0.3 for stronger feedback
+            feedback_buffer = feedback_buffer + reflection * feedback * 0.3
 
         # Apply spatial attention for coherence
         # Reshape for attention

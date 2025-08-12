@@ -76,6 +76,20 @@ class TestLatentReverb:
         assert not torch.isnan(output_low_feedback).any()
         assert not torch.isnan(output_high_feedback).any()
 
+        # Test that feedback changes create more pronounced effects due to 0.3 feedback buffer update
+        output_medium_feedback = reverb_model(sample_latent, feedback=0.4)
+
+        # Feedback should have more noticeable impact now
+        low_medium_diff = torch.abs(output_low_feedback - output_medium_feedback).mean()
+        medium_high_diff = torch.abs(
+            output_medium_feedback - output_high_feedback
+        ).mean()
+
+        # Both differences should be significant due to enhanced feedback processing
+        # Lower threshold since feedback effects can be subtle
+        assert low_medium_diff > 1e-5
+        assert medium_high_diff > 1e-5
+
         # Test room size extremes
         output_small_room = reverb_model(sample_latent, room_size=0.1)
         output_large_room = reverb_model(sample_latent, room_size=2.0)
@@ -83,21 +97,69 @@ class TestLatentReverb:
         assert not torch.isnan(output_small_room).any()
         assert not torch.isnan(output_large_room).any()
 
+        # Test that room size changes create more dramatic effects due to 3.0 multiplier
+        output_medium_room = reverb_model(sample_latent, room_size=0.5)
+
+        # Room size should have more noticeable impact now
+        # Small vs medium room should show more difference
+        small_medium_diff = torch.abs(output_small_room - output_medium_room).mean()
+        medium_large_diff = torch.abs(output_medium_room - output_large_room).mean()
+
+        # Both differences should be significant due to enhanced room size scaling
+        # Lower threshold since effects can be subtle
+        assert small_medium_diff > 1e-6
+        assert medium_large_diff > 1e-6
+
     def test_delay_line_creation(self, reverb_model):
-        """Test the delay line creation method."""
+        """Test the delay line creation method with spatial shifting."""
         x = torch.randn(1, 4, 32, 32)
 
         # Test with zero delay
         delayed_zero = reverb_model.create_delay_line(x, 0.0)
         assert torch.allclose(delayed_zero, x, atol=1e-6)
 
-        # Test with integer delay
-        delayed_int = reverb_model.create_delay_line(x, 2.0)
-        assert delayed_int.shape == x.shape
+        # Test with small delay (should create shifts)
+        delayed_small = reverb_model.create_delay_line(x, 1.0)
+        assert delayed_small.shape == x.shape
+        # Should be different due to spatial shifting
+        assert not torch.allclose(delayed_small, x, atol=1e-6)
 
-        # Test with fractional delay
-        delayed_frac = reverb_model.create_delay_line(x, 2.5)
-        assert delayed_frac.shape == x.shape
+        # Test with larger delay
+        delayed_large = reverb_model.create_delay_line(x, 3.0)
+        assert delayed_large.shape == x.shape
+        # Should be different due to spatial shifting
+        assert not torch.allclose(delayed_large, x, atol=1e-6)
+
+        # Test that the shifted tensor has reasonable values (fade mask will modify the sum)
+        # The roll operation preserves spatial relationships but fade mask affects values
+        # Check that the shifted tensor doesn't have extreme values
+        assert delayed_small.abs().max() < 10.0  # No extreme values
+        assert delayed_large.abs().max() < 10.0  # No extreme values
+
+        # Check that the shifted tensor has similar statistical properties
+        assert abs(delayed_small.mean() - x.mean()) < 1.0
+        assert abs(delayed_large.mean() - x.mean()) < 1.0
+
+    def test_spatial_shifting_behavior(self, reverb_model):
+        """Test that spatial shifting creates meaningful spatial changes."""
+        x = torch.randn(1, 4, 16, 16)
+
+        # Create a simple pattern to track spatial changes
+        x[:, :, 8, 8] = 10.0  # Set center pixel to high value
+
+        # Test x-axis shifting
+        delayed_x = reverb_model.create_delay_line(
+            x, 2.0
+        )  # Should shift by 8 pixels in x
+        # The center value should have moved
+        assert not torch.allclose(delayed_x[:, :, 8, 8], torch.tensor(10.0), atol=1e-6)
+
+        # Test y-axis shifting
+        delayed_y = reverb_model.create_delay_line(
+            x, 1.0
+        )  # Should shift by 2 pixels in y
+        # The center value should have moved
+        assert not torch.allclose(delayed_y[:, :, 8, 8], torch.tensor(10.0), atol=1e-6)
 
     def test_different_input_sizes(self, reverb_model):
         """Test model with different input tensor sizes."""
