@@ -5,15 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "latent_reverb"
 version = "0.0.1"
-description = "Creates spatial "echo" and ambient effects by applying reverb-like processing directly in latent space"
+description = "Creates spatial echo and ambient effects by applying reverb-like processing directly in latent space"
 authors = [
   {name = "Luke Mino-Altherr", email = "luke@comfy.org"}
 ]
 readme = "README.md"
 license = {text = "GNU General Public License v3"}
+requires-python = ">=3.10"
 classifiers = []
 dependencies = [
-
+    "torch>=2.0.0",
+    "numpy>=1.21.0"
 ]
 
 
@@ -26,6 +28,7 @@ dev = [
     "pre-commit", # runs linting on commit
     "pytest",  # testing
     "ruff",  # linting
+    "black", # formatter
 ]
 
 [project.urls]

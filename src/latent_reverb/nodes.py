@@ -1,118 +1,244 @@
-from inspect import cleandoc
-class Example:
-    """
-    A example node
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from typing import Tuple, Optional, Dict, Any
 
-    Class methods
-    -------------
-    INPUT_TYPES (dict):
-        Tell the main program input parameters of nodes.
-    IS_CHANGED:
-        optional method to control when the node is re executed.
 
-    Attributes
-    ----------
-    RETURN_TYPES (`tuple`):
-        The type of each element in the output tulple.
-    RETURN_NAMES (`tuple`):
-        Optional: The name of each output in the output tulple.
-    FUNCTION (`str`):
-        The name of the entry-point method. For example, if `FUNCTION = "execute"` then it will run Example().execute()
-    OUTPUT_NODE ([`bool`]):
-        If this node is an output node that outputs a result/image from the graph. The SaveImage node is an example.
-        The backend iterates on these output nodes and tries to execute all their parents if their parent graph is properly connected.
-        Assumed to be False if not present.
-    CATEGORY (`str`):
-        The category the node should appear in the UI.
-    execute(s) -> tuple || None:
-        The entry point method. The name of this method must be the same as the value of property `FUNCTION`.
-        For example, if `FUNCTION = "execute"` then this method's name must be `execute`, if `FUNCTION = "foo"` then it must be `foo`.
+class LatentReverb(nn.Module):
     """
-    def __init__(self):
-        pass
+    A neural reverb that operates in latent space using convolutions and attention
+    to create spatial echo/reflection effects on encoded image features.
+    """
+
+    def __init__(
+        self, channels: int = 4, num_reflections: int = 8, max_delay: int = 16
+    ):
+        super().__init__()
+        self.channels = channels
+        self.num_reflections = num_reflections
+        self.max_delay = max_delay
+
+        # Learnable reflection parameters
+        self.reflection_weights = nn.Parameter(torch.randn(num_reflections) * 0.1)
+        self.reflection_delays = nn.Parameter(
+            torch.randint(1, max_delay, (num_reflections,)).float()
+        )
+
+        # Spatial processing layers
+        self.spatial_conv = nn.Conv2d(channels, channels * 2, 3, padding=1)
+        self.feedback_conv = nn.Conv2d(channels, channels, 3, padding=1)
+        self.output_conv = nn.Conv2d(channels * 3, channels, 1)
+
+        # Attention for spatial coherence
+        # Ensure num_heads is compatible with channels
+        num_heads = min(4, channels) if channels >= 4 else 1
+        self.spatial_attention = nn.MultiheadAttention(
+            channels, num_heads=num_heads, batch_first=True
+        )
+
+        # Dampening network
+        self.dampen_net = nn.Sequential(
+            nn.Conv2d(channels, max(1, channels // 2), 1),
+            nn.SiLU(),
+            nn.Conv2d(max(1, channels // 2), channels, 1),
+            nn.Sigmoid(),
+        )
+
+    def create_delay_line(self, x: torch.Tensor, delay: float) -> torch.Tensor:
+        """Create delayed version using fractional delay interpolation"""
+        b, c, h, w = x.shape
+
+        # Integer and fractional parts
+        delay_int = int(delay)
+        delay_frac = delay - delay_int
+
+        if delay_int == 0:
+            return x
+
+        # Spatial delay using convolution with learned kernels
+        kernel_size = min(delay_int * 2 + 1, 7)
+        padding = kernel_size // 2
+
+        # Create Gaussian-like delay kernel
+        kernel = torch.exp(-torch.linspace(-2, 2, kernel_size).pow(2))
+        kernel = kernel / kernel.sum()
+        kernel = kernel.view(1, 1, kernel_size, 1).to(x.device)
+
+        # Apply spatial delay
+        delayed = F.conv2d(x.view(-1, 1, h, w), kernel, padding=(padding, 0), groups=1)
+        delayed = delayed.view(b, c, h, w)
+
+        return delayed
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        wet_mix: float = 0.3,
+        feedback: float = 0.4,
+        room_size: float = 0.5,
+    ) -> torch.Tensor:
+        """
+        Apply latent reverb effect
+
+        Args:
+            x: Input latent tensor [B, C, H, W]
+            wet_mix: Dry/wet mix ratio (0=dry, 1=wet)
+            feedback: Feedback amount for reflections
+            room_size: Controls reflection pattern and delays
+        """
+        b, c, h, w = x.shape
+        dry_signal = x.clone()
+
+        # Scale delays by room size
+        scaled_delays = self.reflection_delays * room_size
+
+        # Initialize accumulator
+        wet_signal = torch.zeros_like(x)
+        feedback_buffer = x * 0.1
+
+        # Process spatial features
+        spatial_features = self.spatial_conv(x)
+
+        # Create multiple reflections
+        for i in range(self.num_reflections):
+            delay = scaled_delays[i]
+            weight = torch.sigmoid(self.reflection_weights[i]) * (
+                0.8**i
+            )  # Natural decay
+
+            # Create delayed reflection
+            reflection = self.create_delay_line(feedback_buffer, delay)
+
+            # Apply spatial processing
+            reflection = self.feedback_conv(reflection)
+
+            # Add dampening (frequency-dependent decay)
+            damping = self.dampen_net(reflection)
+            reflection = reflection * damping
+
+            # Accumulate weighted reflection
+            wet_signal = wet_signal + reflection * weight
+
+            # Update feedback buffer with some of the reflection
+            feedback_buffer = feedback_buffer + reflection * feedback * 0.1
+
+        # Apply spatial attention for coherence
+        # Reshape for attention
+        wet_flat = wet_signal.view(b, c, -1).transpose(1, 2)  # [B, HW, C]
+        attended, _ = self.spatial_attention(wet_flat, wet_flat, wet_flat)
+        wet_signal = attended.transpose(1, 2).view(b, c, h, w)
+
+        # Combine with spatial features and output
+        combined = torch.cat([spatial_features, wet_signal], dim=1)
+        processed_wet = self.output_conv(combined)
+
+        # Final dry/wet mix
+        output = dry_signal * (1 - wet_mix) + processed_wet * wet_mix
+
+        return output
+
+
+class LatentReverbNode:
+    """ComfyUI Custom Node for Latent Space Reverb"""
 
     @classmethod
-    def INPUT_TYPES(s):
-        """
-            Return a dictionary which contains config for all input fields.
-            Some types (string): "MODEL", "VAE", "CLIP", "CONDITIONING", "LATENT", "IMAGE", "INT", "STRING", "FLOAT".
-            Input types "INT", "STRING" or "FLOAT" are special values for fields on the node.
-            The type can be a list for selection.
-
-            Returns: `dict`:
-                - Key input_fields_group (`string`): Can be either required, hidden or optional. A node class must have property `required`
-                - Value input_fields (`dict`): Contains input fields config:
-                    * Key field_name (`string`): Name of a entry-point method's argument
-                    * Value field_config (`tuple`):
-                        + First value is a string indicate the type of field or a list for selection.
-                        + Secound value is a config for type "INT", "STRING" or "FLOAT".
-        """
-        return {
-            "required": {
-                "image": ("Image", { "tooltip": "This is an image"}),
-                "int_field": ("INT", {
-                    "default": 0,
-                    "min": 0, #Minimum value
-                    "max": 4096, #Maximum value
-                    "step": 64, #Slider's step
-                    "display": "number" # Cosmetic only: display as "number" or "slider"
-                }),
-                "float_field": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 10.0,
-                    "step": 0.01,
-                    "round": 0.001, #The value represeting the precision to round to, will be set to the step value by default. Can be set to False to disable rounding.
-                    "display": "number"}),
-                "print_to_screen": (["enable", "disable"],),
-                "string_field": ("STRING", {
-                    "multiline": False, #True if you want the field to look like the one on the ClipTextEncode node
-                    "default": "Hello World!"
-                }),
+    def INPUT_TYPES(cls):
+        return (
+            {
+                "required": {
+                    "samples": ("LATENT",),
+                    "wet_mix": (
+                        "FLOAT",
+                        {
+                            "default": 0.3,
+                            "min": 0.0,
+                            "max": 1.0,
+                            "step": 0.01,
+                            "display": "slider",
+                        },
+                    ),
+                    "feedback": (
+                        "FLOAT",
+                        {
+                            "default": 0.4,
+                            "min": 0.0,
+                            "max": 0.8,
+                            "step": 0.01,
+                            "display": "slider",
+                        },
+                    ),
+                    "room_size": (
+                        "FLOAT",
+                        {
+                            "default": 0.5,
+                            "min": 0.1,
+                            "max": 2.0,
+                            "step": 0.1,
+                            "display": "slider",
+                        },
+                    ),
+                    "num_reflections": (
+                        "INT",
+                        {"default": 8, "min": 2, "max": 16, "step": 1},
+                    ),
+                }
             },
-        }
+        )
 
-    RETURN_TYPES = ("IMAGE",)
-    #RETURN_NAMES = ("image_output_name",)
-    DESCRIPTION = cleandoc(__doc__)
-    FUNCTION = "test"
+    RETURN_TYPES = ("LATENT",)
+    FUNCTION = "apply_reverb"
+    CATEGORY = "latent/effects"
 
-    #OUTPUT_NODE = False
-    #OUTPUT_TOOLTIPS = ("",) # Tooltips for the output node
+    def __init__(self):
+        self.reverb_cache: Dict[str, LatentReverb] = {}
 
-    CATEGORY = "Example"
+    def get_reverb_processor(
+        self, channels: int, num_reflections: int, device: str
+    ) -> LatentReverb:
+        """Get or create reverb processor with caching"""
+        cache_key = f"{channels}_{num_reflections}_{device}"
 
-    def test(self, image, string_field, int_field, float_field, print_to_screen):
-        if print_to_screen == "enable":
-            print(f"""Your input contains:
-                string_field aka input text: {string_field}
-                int_field: {int_field}
-                float_field: {float_field}
-            """)
-        #do some processing on the image, in this example I just invert it
-        image = 1.0 - image
-        return (image,)
+        if cache_key not in self.reverb_cache:
+            reverb = LatentReverb(
+                channels=channels, num_reflections=num_reflections, max_delay=16
+            ).to(device)
+            self.reverb_cache[cache_key] = reverb
 
-    """
-        The node will always be re executed if any of the inputs change but
-        this method can be used to force the node to execute again even when the inputs don't change.
-        You can make this node return a number or a string. This value will be compared to the one returned the last time the node was
-        executed, if it is different the node will be executed again.
-        This method is used in the core repo for the LoadImage node where they return the image hash as a string, if the image hash
-        changes between executions the LoadImage node is executed again.
-    """
-    #@classmethod
-    #def IS_CHANGED(s, image, string_field, int_field, float_field, print_to_screen):
-    #    return ""
+        return self.reverb_cache[cache_key]
+
+    def apply_reverb(
+        self,
+        samples: Dict[str, torch.Tensor],
+        wet_mix: float,
+        feedback: float,
+        room_size: float,
+        num_reflections: int,
+    ) -> Tuple[Dict[str, torch.Tensor]]:
+        """Apply latent reverb effect"""
+
+        latent = samples["samples"]
+        device = latent.device
+        channels = latent.shape[1]
+
+        # Get reverb processor
+        reverb = self.get_reverb_processor(channels, num_reflections, device)
+
+        # Apply reverb
+        with torch.no_grad():
+            processed_latent = reverb(
+                latent, wet_mix=wet_mix, feedback=feedback, room_size=room_size
+            )
+
+        # Return in ComfyUI latent format
+        return ({"samples": processed_latent},)
 
 
-# A dictionary that contains all nodes you want to export with their names
-# NOTE: names should be globally unique
+# Node registration
 NODE_CLASS_MAPPINGS = {
-    "Example": Example
+    "LatentReverb": LatentReverbNode,
 }
 
-# A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Example": "Example Node"
+    "LatentReverb": "Latent Space Reverb",
 }
