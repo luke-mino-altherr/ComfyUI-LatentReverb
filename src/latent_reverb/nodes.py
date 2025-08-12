@@ -12,18 +12,29 @@ class LatentReverb(nn.Module):
     """
 
     def __init__(
-        self, channels: int = 4, num_reflections: int = 8, max_delay: int = 16
+        self,
+        channels: int = 4,
+        num_reflections: int = 16,
+        max_delay: int = 24,
+        decay_rate: float = 0.8,  # Single decay control
     ):
         super().__init__()
         self.channels = channels
         self.num_reflections = num_reflections
         self.max_delay = max_delay
+        self.decay_rate = decay_rate
 
         # Learnable reflection parameters
         self.reflection_weights = nn.Parameter(torch.randn(num_reflections) * 0.1)
         self.reflection_delays = nn.Parameter(
             torch.randint(1, max_delay, (num_reflections,)).float()
         )
+
+        # Simple decay - each reflection decays by decay_rate
+        # No complex parameter arrays needed
+
+        # Add diffusion parameters for more realistic reverb
+        self.diffusion_strength = nn.Parameter(torch.randn(num_reflections) * 0.2)
 
         # Spatial processing layers
         self.spatial_conv = nn.Conv2d(channels, channels * 2, 3, padding=1)
@@ -114,8 +125,12 @@ class LatentReverb(nn.Module):
 
         # Scale delays by room size and normalize by number of reflections
         # This ensures consistent visual effect regardless of reflection count
-        reflection_scale_factor = 8.0 / self.num_reflections  # Normalize by reflection count
-        scaled_delays = self.reflection_delays * room_size * 12.0 * reflection_scale_factor
+        reflection_scale_factor = (
+            8.0 / self.num_reflections
+        )  # Normalize by reflection count
+        scaled_delays = (
+            self.reflection_delays * room_size * 12.0 * reflection_scale_factor
+        )
 
         # Initialize accumulator
         wet_signal = torch.zeros_like(x)
@@ -124,18 +139,20 @@ class LatentReverb(nn.Module):
         # Process spatial features
         spatial_features = self.spatial_conv(x)
 
-        # Create multiple reflections
+        # Create multiple reflections with simple decay
         for i in range(self.num_reflections):
             delay = scaled_delays[i]
-            
+
+            # Simple exponential decay - each reflection gets weaker
+            decay_rate = self.decay_rate**i
+
+            # Add diffusion for more realistic reverb
+            diffusion = torch.sigmoid(self.diffusion_strength[i])
+
             # Scale reflection weights based on number of reflections
             # This ensures consistent visual impact regardless of reflection count
             base_weight = torch.sigmoid(self.reflection_weights[i])
-            
-            # Normalize decay rate based on number of reflections
-            # Fewer reflections = slower decay to maintain visual impact
-            decay_rate = 0.9 ** (i * (8.0 / self.num_reflections))
-            
+
             # Scale feedback effect based on number of reflections
             # Fewer reflections = stronger feedback effect to compensate
             feedback_scale = 1.0 + (8.0 / self.num_reflections) * 0.5
@@ -159,7 +176,7 @@ class LatentReverb(nn.Module):
             # Update feedback buffer with reflection-count-aware scaling
             # Scale feedback amount based on number of reflections
             feedback_amount = feedback * 1.2 * (8.0 / self.num_reflections)
-            
+
             # Apply non-linear feedback scaling that's consistent across reflection counts
             if feedback > 0.8:
                 feedback_amount *= 2.0
@@ -169,7 +186,9 @@ class LatentReverb(nn.Module):
             if feedback > 0.3 and i > 0:
                 prev_reflection = self.create_delay_line(feedback_buffer, delay * 0.5)
                 cross_feedback_strength = feedback * 0.4 * (8.0 / self.num_reflections)
-                feedback_buffer = feedback_buffer + prev_reflection * cross_feedback_strength
+                feedback_buffer = (
+                    feedback_buffer + prev_reflection * cross_feedback_strength
+                )
 
         # Apply spatial attention for coherence
         # Reshape for attention
@@ -218,7 +237,9 @@ class LatentReverb(nn.Module):
         if room_size > 0.8:
             # Increase contrast in the wet signal for larger rooms
             mean_val = wet_signal.mean()
-            contrast_factor = 1.0 + (room_size - 0.8) * 0.5 * (8.0 / self.num_reflections)
+            contrast_factor = 1.0 + (room_size - 0.8) * 0.5 * (
+                8.0 / self.num_reflections
+            )
             wet_signal = (wet_signal - mean_val) * contrast_factor + mean_val
 
         # Combine with spatial features and output
@@ -247,6 +268,7 @@ class LatentReverbNode:
                         "max": 1.0,
                         "step": 0.01,
                         "display": "slider",
+                        "description": "Controls the balance between original (dry) and processed (wet) signal. 0.0 = original image only, 1.0 = fully processed image only, 0.3-0.5 = typical reverb mix.",
                     },
                 ),
                 "feedback": (
@@ -254,46 +276,66 @@ class LatentReverbNode:
                     {
                         "default": 0.4,
                         "min": 0.0,
-                        "max": 1.5,  # Increased from 0.8 to 1.5 for more dramatic effects
+                        "max": 1.5,
                         "step": 0.01,
                         "display": "slider",
-                        "description": "Controls how much each reflection feeds back into the system. Higher values create more complex, layered effects. Values above 0.8 create increasingly dramatic and complex patterns. Values above 1.0 create extreme feedback effects. The visual impact is now automatically scaled based on the number of reflections to ensure consistent behavior.",
+                        "description": "Controls how much each reflection feeds back into the system. Higher values create more complex, layered effects. Values above 0.8 create increasingly dramatic and complex patterns. Values above 1.0 create extreme feedback effects. The visual impact is automatically scaled based on the number of reflections.",
                     },
                 ),
                 "room_size": (
                     "FLOAT",
                     {
                         "default": 0.5,
-                        "min": 0.05,  # Decreased from 0.1 to 0.05 for more subtle small rooms
-                        "max": 4.0,   # Increased from 2.0 to 4.0 for much more dramatic large rooms
-                        "step": 0.05, # Decreased step size for finer control
+                        "min": 0.05,
+                        "max": 4.0,
+                        "step": 0.05,
                         "display": "slider",
-                        "description": "Controls the spatial scale of reflections. Small values (0.05-0.3) create subtle shifts, medium values (0.5-1.5) create moderate effects, large values (2.0-4.0) create dramatic spatial effects, blur, and contrast changes. The visual impact is now automatically scaled based on the number of reflections to ensure consistent behavior.",
+                        "description": "Controls the spatial scale of reflections. Small values (0.05-0.3) create subtle shifts, medium values (0.5-1.5) create moderate effects, large values (2.0-4.0) create dramatic spatial effects, blur, and contrast changes. The visual impact is automatically scaled based on the number of reflections.",
                     },
                 ),
                 "num_reflections": (
                     "INT",
-                    {"default": 8, "min": 2, "max": 16, "step": 1},
+                    {
+                        "default": 16,
+                        "min": 2,
+                        "max": 32,
+                        "step": 1,
+                        "description": "Number of reflection layers. Higher values create more complex, realistic reverb. Lower values (2-8) create echo-like effects, higher values (16-32) create natural reverb. The system automatically adjusts individual reflection strength to maintain consistent visual impact.",
+                    },
+                ),
+                "decay_rate": (
+                    "FLOAT",
+                    {
+                        "default": 0.8,
+                        "min": 0.5,
+                        "max": 0.95,
+                        "step": 0.01,
+                        "display": "slider",
+                        "description": "Controls how quickly reflections fade. Higher values (0.9-0.95) create longer reverb tails like a large hall, medium values (0.8-0.85) create natural reverb, lower values (0.5-0.7) create short, tight reverb like a small room. Each reflection gets progressively weaker by this factor.",
+                    },
                 ),
             }
         }
 
     RETURN_TYPES = ("LATENT",)
     FUNCTION = "apply_reverb"
-    CATEGORY = "latent/effects"
+    CATEGORY = "latent/transform"
 
     def __init__(self):
         self.reverb_cache: Dict[str, LatentReverb] = {}
 
     def get_reverb_processor(
-        self, channels: int, num_reflections: int, device: str
+        self, channels: int, num_reflections: int, device: str, decay_rate: float
     ) -> LatentReverb:
         """Get or create reverb processor with caching"""
-        cache_key = f"{channels}_{num_reflections}_{device}"
+        cache_key = f"{channels}_{num_reflections}_{decay_rate}_{device}"
 
         if cache_key not in self.reverb_cache:
             reverb = LatentReverb(
-                channels=channels, num_reflections=num_reflections, max_delay=16
+                channels=channels,
+                num_reflections=num_reflections,
+                max_delay=24,
+                decay_rate=decay_rate,
             ).to(device)
             self.reverb_cache[cache_key] = reverb
 
@@ -306,6 +348,7 @@ class LatentReverbNode:
         feedback: float,
         room_size: float,
         num_reflections: int,
+        decay_rate: float,
     ) -> Tuple[Dict[str, torch.Tensor]]:
         """Apply latent reverb effect"""
 
@@ -314,7 +357,9 @@ class LatentReverbNode:
         channels = latent.shape[1]
 
         # Get reverb processor
-        reverb = self.get_reverb_processor(channels, num_reflections, device)
+        reverb = self.get_reverb_processor(
+            channels, num_reflections, device, decay_rate
+        )
 
         # Apply reverb
         with torch.no_grad():

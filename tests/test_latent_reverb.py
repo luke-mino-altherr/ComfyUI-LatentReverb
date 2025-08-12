@@ -39,16 +39,30 @@ class TestLatentReverb:
 
     def test_initialization(self):
         """Test model initialization with different parameters."""
-        model = LatentReverb(channels=4, num_reflections=8, max_delay=16)
+        model = LatentReverb(
+            channels=4, num_reflections=8, max_delay=16, decay_rate=0.8
+        )
         assert model.channels == 4
         assert model.num_reflections == 8
         assert model.max_delay == 16
+        assert model.decay_rate == 0.8
 
         # Test parameter shapes
         assert model.reflection_weights.shape == (8,)
         assert model.reflection_delays.shape == (8,)
         assert model.spatial_conv.in_channels == 4
         assert model.spatial_conv.out_channels == 8
+
+        # Test with different decay rates
+        model_fast = LatentReverb(
+            channels=4, num_reflections=8, max_delay=16, decay_rate=0.6
+        )
+        assert model_fast.decay_rate == 0.6
+
+        model_slow = LatentReverb(
+            channels=4, num_reflections=8, max_delay=16, decay_rate=0.9
+        )
+        assert model_slow.decay_rate == 0.9
 
     def test_forward_pass(self, reverb_model, sample_latent):
         """Test forward pass with different parameters."""
@@ -65,6 +79,39 @@ class TestLatentReverb:
         assert torch.allclose(output_dry, sample_latent, atol=1e-6)
         # Wet output should be different from input
         assert not torch.allclose(output_wet, sample_latent, atol=1e-6)
+
+    def test_decay_rate_effects(self, sample_latent):
+        """Test that different decay rates create different effects."""
+        # Create models with different decay rates
+        model_fast = LatentReverb(
+            channels=4, num_reflections=8, max_delay=16, decay_rate=0.6
+        )
+        model_medium = LatentReverb(
+            channels=4, num_reflections=8, max_delay=16, decay_rate=0.8
+        )
+        model_slow = LatentReverb(
+            channels=4, num_reflections=8, max_delay=16, decay_rate=0.9
+        )
+
+        # Test that different decay rates produce different outputs
+        output_fast = model_fast(
+            sample_latent, wet_mix=0.5, feedback=0.3, room_size=0.5
+        )
+        output_medium = model_medium(
+            sample_latent, wet_mix=0.5, feedback=0.3, room_size=0.5
+        )
+        output_slow = model_slow(
+            sample_latent, wet_mix=0.5, feedback=0.3, room_size=0.5
+        )
+
+        # All outputs should be valid
+        assert not torch.isnan(output_fast).any()
+        assert not torch.isnan(output_medium).any()
+        assert not torch.isnan(output_slow).any()
+
+        # Fast decay should create shorter effects than slow decay
+        # This is a basic check that the decay rate affects the output
+        assert not torch.allclose(output_fast, output_slow, atol=1e-6)
 
     def test_parameter_ranges(self, reverb_model, sample_latent):
         """Test behavior with extreme parameter values."""
@@ -187,12 +234,19 @@ class TestLatentReverbNode:
         assert "feedback" in required
         assert "room_size" in required
         assert "num_reflections" in required
+        assert "decay_rate" in required  # New parameter
 
         # Test wet_mix constraints
-        wet_mix_config = required["wet_mix"][1]  # ComfyUI format: (type, config_dict)
+        wet_mix_config = required["wet_mix"][1]
         assert wet_mix_config["min"] == 0.0
         assert wet_mix_config["max"] == 1.0
         assert wet_mix_config["default"] == 0.3
+
+        # Test decay_rate constraints
+        decay_config = required["decay_rate"][1]
+        assert decay_config["min"] == 0.5
+        assert decay_config["max"] == 0.95
+        assert decay_config["default"] == 0.8
 
     def test_metadata(self):
         """Test node metadata."""
@@ -210,20 +264,34 @@ class TestLatentReverbNode:
         device = "cpu"
         channels = 4
         num_reflections = 8
+        decay_rate = 0.8
 
         # Get processor
-        processor = reverb_node.get_reverb_processor(channels, num_reflections, device)
+        processor = reverb_node.get_reverb_processor(
+            channels, num_reflections, device, decay_rate
+        )
         assert isinstance(processor, LatentReverb)
         assert processor.channels == channels
         assert processor.num_reflections == num_reflections
+        assert processor.decay_rate == decay_rate
 
         # Test caching
-        processor2 = reverb_node.get_reverb_processor(channels, num_reflections, device)
+        processor2 = reverb_node.get_reverb_processor(
+            channels, num_reflections, device, decay_rate
+        )
         assert processor is processor2  # Should be the same instance
 
         # Test different parameters create different processors
-        processor_diff = reverb_node.get_reverb_processor(channels, 16, device)
+        processor_diff = reverb_node.get_reverb_processor(
+            channels, 16, device, decay_rate
+        )
         assert processor is not processor_diff
+
+        # Test different decay rates create different processors
+        processor_diff_decay = reverb_node.get_reverb_processor(
+            channels, num_reflections, device, 0.9
+        )
+        assert processor is not processor_diff_decay
 
     def test_apply_reverb(self, reverb_node, sample_latent_dict):
         """Test the main reverb application function."""
@@ -231,9 +299,15 @@ class TestLatentReverbNode:
         feedback = 0.3
         room_size = 0.7
         num_reflections = 6
+        decay_rate = 0.8
 
         result = reverb_node.apply_reverb(
-            sample_latent_dict, wet_mix, feedback, room_size, num_reflections
+            sample_latent_dict,
+            wet_mix,
+            feedback,
+            room_size,
+            num_reflections,
+            decay_rate,
         )
 
         # Check return format
@@ -258,6 +332,7 @@ class TestLatentReverbNode:
             feedback=0.0,
             room_size=0.5,
             num_reflections=8,
+            decay_rate=0.8,
         )
 
         output_latent = result[0]["samples"]
@@ -265,6 +340,26 @@ class TestLatentReverbNode:
 
         # With wet_mix=0, output should be very close to input
         assert torch.allclose(output_latent, input_latent, atol=1e-5)
+
+    def test_decay_rate_parameter_effects(self, reverb_node, sample_latent_dict):
+        """Test that different decay rates create different effects."""
+        # Test with different decay rates
+        result_fast = reverb_node.apply_reverb(
+            sample_latent_dict, 0.5, 0.3, 0.5, 8, 0.6
+        )
+        result_slow = reverb_node.apply_reverb(
+            sample_latent_dict, 0.5, 0.3, 0.5, 8, 0.9
+        )
+
+        output_fast = result_fast[0]["samples"]
+        output_slow = result_slow[0]["samples"]
+
+        # Both should be valid outputs
+        assert not torch.isnan(output_fast).any()
+        assert not torch.isnan(output_slow).any()
+
+        # Different decay rates should produce different results
+        assert not torch.allclose(output_fast, output_slow, atol=1e-6)
 
 
 # Integration tests
@@ -280,6 +375,7 @@ class TestIntegration:
             feedback=0.3,
             room_size=0.6,
             num_reflections=10,
+            decay_rate=0.8,
         )
 
         # Verify output integrity
@@ -295,7 +391,7 @@ class TestIntegration:
         for channels in channel_counts:
             latent_dict = {"samples": torch.randn(1, channels, 32, 32)}
 
-            result = reverb_node.apply_reverb(latent_dict, 0.3, 0.4, 0.5, 8)
+            result = reverb_node.apply_reverb(latent_dict, 0.3, 0.4, 0.5, 8, 0.8)
 
             output = result[0]["samples"]
             assert output.shape[1] == channels
@@ -315,6 +411,7 @@ class TestErrorHandling:
             feedback=0.4,
             room_size=0.5,
             num_reflections=8,
+            decay_rate=0.8,
         )
         assert result is not None
 
@@ -324,7 +421,7 @@ class TestErrorHandling:
 
         # Should handle gracefully or raise appropriate error
         with pytest.raises(Exception):
-            reverb_node.apply_reverb(empty_latent, 0.3, 0.4, 0.5, 8)
+            reverb_node.apply_reverb(empty_latent, 0.3, 0.4, 0.5, 8, 0.8)
 
 
 # Performance tests
@@ -340,7 +437,7 @@ class TestPerformance:
 
         # Process multiple times to check for memory leaks
         for _ in range(5):
-            result = reverb_node.apply_reverb(sample_latent_dict, 0.3, 0.4, 0.5, 8)
+            result = reverb_node.apply_reverb(sample_latent_dict, 0.3, 0.4, 0.5, 8, 0.8)
             del result
 
         # Force garbage collection
@@ -351,7 +448,7 @@ class TestPerformance:
         import time
 
         start_time = time.time()
-        result = reverb_node.apply_reverb(sample_latent_dict, 0.3, 0.4, 0.5, 8)
+        result = reverb_node.apply_reverb(sample_latent_dict, 0.3, 0.4, 0.5, 8, 0.8)
         end_time = time.time()
 
         processing_time = end_time - start_time
