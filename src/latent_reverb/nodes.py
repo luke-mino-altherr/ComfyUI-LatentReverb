@@ -112,10 +112,10 @@ class LatentReverb(nn.Module):
         b, c, h, w = x.shape
         dry_signal = x.clone()
 
-        # Scale delays by room size - make room_size have much more dramatic effect
-        # Base delays are 1-16, so room_size=2.0 will give delays of 2-32
-        # Multiply by additional factor to make the effect more visible
-        scaled_delays = self.reflection_delays * room_size * 8.0
+        # Scale delays by room size and normalize by number of reflections
+        # This ensures consistent visual effect regardless of reflection count
+        reflection_scale_factor = 8.0 / self.num_reflections  # Normalize by reflection count
+        scaled_delays = self.reflection_delays * room_size * 12.0 * reflection_scale_factor
 
         # Initialize accumulator
         wet_signal = torch.zeros_like(x)
@@ -127,10 +127,19 @@ class LatentReverb(nn.Module):
         # Create multiple reflections
         for i in range(self.num_reflections):
             delay = scaled_delays[i]
-            # Make reflection weights decay more slowly and be more influenced by feedback
+            
+            # Scale reflection weights based on number of reflections
+            # This ensures consistent visual impact regardless of reflection count
             base_weight = torch.sigmoid(self.reflection_weights[i])
-            # Slower decay: use 0.8 instead of 0.6 for stronger later reflections
-            weight = base_weight * (0.8**i) * (1.0 + feedback * 0.5)
+            
+            # Normalize decay rate based on number of reflections
+            # Fewer reflections = slower decay to maintain visual impact
+            decay_rate = 0.9 ** (i * (8.0 / self.num_reflections))
+            
+            # Scale feedback effect based on number of reflections
+            # Fewer reflections = stronger feedback effect to compensate
+            feedback_scale = 1.0 + (8.0 / self.num_reflections) * 0.5
+            weight = base_weight * decay_rate * (1.0 + feedback * feedback_scale)
 
             # Create delayed reflection
             reflection = self.create_delay_line(feedback_buffer, delay)
@@ -142,22 +151,25 @@ class LatentReverb(nn.Module):
             damping = self.dampen_net(reflection)
             reflection = reflection * damping
 
-            # Accumulate weighted reflection with stronger effect
-            wet_signal = wet_signal + reflection * weight * 3.0
+            # Scale reflection strength based on number of reflections
+            # Fewer reflections = stronger individual reflections
+            reflection_strength = 4.0 * (8.0 / self.num_reflections)
+            wet_signal = wet_signal + reflection * weight * reflection_strength
 
-            # Update feedback buffer with much stronger feedback effect
-            # Now feedback parameter directly controls how much of each reflection feeds back
-            # Add some non-linearity to make feedback more interesting
-            feedback_amount = feedback * 0.8
-            if feedback > 0.6:  # High feedback creates more complex patterns
-                feedback_amount *= 1.5
+            # Update feedback buffer with reflection-count-aware scaling
+            # Scale feedback amount based on number of reflections
+            feedback_amount = feedback * 1.2 * (8.0 / self.num_reflections)
+            
+            # Apply non-linear feedback scaling that's consistent across reflection counts
+            if feedback > 0.8:
+                feedback_amount *= 2.0
             feedback_buffer = feedback_buffer + reflection * feedback_amount
 
-            # Add some cross-channel feedback for more complex effects
-            if feedback > 0.4 and i > 0:
-                # Mix some of the previous reflection into the feedback buffer
+            # Add cross-channel feedback with reflection-count-aware scaling
+            if feedback > 0.3 and i > 0:
                 prev_reflection = self.create_delay_line(feedback_buffer, delay * 0.5)
-                feedback_buffer = feedback_buffer + prev_reflection * feedback * 0.2
+                cross_feedback_strength = feedback * 0.4 * (8.0 / self.num_reflections)
+                feedback_buffer = feedback_buffer + prev_reflection * cross_feedback_strength
 
         # Apply spatial attention for coherence
         # Reshape for attention
@@ -165,17 +177,16 @@ class LatentReverb(nn.Module):
         attended, _ = self.spatial_attention(wet_flat, wet_flat, wet_flat)
         wet_signal = attended.transpose(1, 2).view(b, c, h, w)
 
-        # Add subtle blur effect to simulate acoustic diffusion
-        # This makes the reverb effect more visible
-        if room_size > 0.5:  # Only apply blur for larger rooms
-            blur_kernel_size = max(3, int(room_size * 2))
+        # Scale blur effect based on number of reflections
+        # Fewer reflections = stronger blur to maintain visual impact
+        if room_size > 0.3:
+            blur_kernel_size = max(3, int(room_size * 3 * (8.0 / self.num_reflections)))
             if blur_kernel_size % 2 == 0:
                 blur_kernel_size += 1  # Ensure odd kernel size
-            blur_kernel_size = min(blur_kernel_size, 9)  # Cap at reasonable size
+            blur_kernel_size = min(blur_kernel_size, 15)
 
-            # Apply Gaussian blur with room_size dependent sigma
-            # Use a compatible blur method that works across PyTorch versions
-            sigma = room_size * 0.5
+            # Apply Gaussian blur with room_size and reflection-count dependent sigma
+            sigma = room_size * 0.8 * (8.0 / self.num_reflections)
 
             # Create a simple averaging blur kernel as fallback
             blur_kernel = torch.ones(
@@ -188,9 +199,8 @@ class LatentReverb(nn.Module):
                 wet_signal, blur_kernel, padding=blur_kernel_size // 2, groups=c
             )
 
-        # Add edge enhancement for more visible reverb effects
-        # This helps make the spatial shifts more apparent
-        if feedback > 0.3:
+        # Scale edge enhancement based on number of reflections
+        if feedback > 0.2:
             # Create edge detection kernel
             edge_kernel = torch.tensor(
                 [[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]],
@@ -199,16 +209,16 @@ class LatentReverb(nn.Module):
             ).view(1, 1, 3, 3)
             edge_kernel = edge_kernel.repeat(c, 1, 1, 1)
 
-            # Apply edge detection with feedback-dependent strength
+            # Apply edge detection with feedback and reflection-count dependent strength
             edge_response = F.conv2d(wet_signal, edge_kernel, padding=1, groups=c)
-            edge_strength = feedback * 0.1  # Subtle edge enhancement
+            edge_strength = feedback * 0.2 * (8.0 / self.num_reflections)
             wet_signal = wet_signal + edge_response * edge_strength
 
-        # Add contrast enhancement for more dramatic effects
-        if room_size > 1.0:
+        # Scale contrast enhancement based on number of reflections
+        if room_size > 0.8:
             # Increase contrast in the wet signal for larger rooms
             mean_val = wet_signal.mean()
-            contrast_factor = 1.0 + (room_size - 1.0) * 0.3
+            contrast_factor = 1.0 + (room_size - 0.8) * 0.5 * (8.0 / self.num_reflections)
             wet_signal = (wet_signal - mean_val) * contrast_factor + mean_val
 
         # Combine with spatial features and output
@@ -244,21 +254,21 @@ class LatentReverbNode:
                     {
                         "default": 0.4,
                         "min": 0.0,
-                        "max": 0.8,
+                        "max": 1.5,  # Increased from 0.8 to 1.5 for more dramatic effects
                         "step": 0.01,
                         "display": "slider",
-                        "description": "Controls how much each reflection feeds back into the system. Higher values create more complex, layered effects. Values above 0.6 create increasingly complex patterns.",
+                        "description": "Controls how much each reflection feeds back into the system. Higher values create more complex, layered effects. Values above 0.8 create increasingly dramatic and complex patterns. Values above 1.0 create extreme feedback effects. The visual impact is now automatically scaled based on the number of reflections to ensure consistent behavior.",
                     },
                 ),
                 "room_size": (
                     "FLOAT",
                     {
                         "default": 0.5,
-                        "min": 0.1,
-                        "max": 2.0,
-                        "step": 0.1,
+                        "min": 0.05,  # Decreased from 0.1 to 0.05 for more subtle small rooms
+                        "max": 4.0,   # Increased from 2.0 to 4.0 for much more dramatic large rooms
+                        "step": 0.05, # Decreased step size for finer control
                         "display": "slider",
-                        "description": "Controls the spatial scale of reflections. Small values (0.1-0.5) create subtle shifts, large values (1.0-2.0) create dramatic spatial effects and blur.",
+                        "description": "Controls the spatial scale of reflections. Small values (0.05-0.3) create subtle shifts, medium values (0.5-1.5) create moderate effects, large values (2.0-4.0) create dramatic spatial effects, blur, and contrast changes. The visual impact is now automatically scaled based on the number of reflections to ensure consistent behavior.",
                     },
                 ),
                 "num_reflections": (
@@ -322,5 +332,5 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "LatentReverb": "Latent Space Reverb",
+    "LatentReverb": "Latent Reverb",
 }

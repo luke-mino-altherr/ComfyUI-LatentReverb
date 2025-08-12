@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "latent_reverb"
-version = "0.0.2"
+version = "0.0.3"
 description = "Creates spatial echo and ambient effects by applying reverb-like processing directly in latent space"
 authors = [
   {name = "Luke Mino-Altherr", email = "luke@comfy.org"}
