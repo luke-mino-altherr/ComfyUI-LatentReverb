@@ -3,18 +3,94 @@
 Creates spatial "echo" and ambient effects by applying reverb-like processing directly in latent space
 
 > [!NOTE]
-> This projected was created with a [cookiecutter](https://github.com/Comfy-Org/cookiecutter-comfy-extension) template. It helps you start writing custom nodes without worrying about the Python setup.
+> This project was created with a [cookiecutter](https://github.com/Comfy-Org/cookiecutter-comfy-extension) template. It helps you start writing custom nodes without worrying about the Python setup.
 
-## Quickstart
+## Overview
+
+ComfyUI-Latent-Reverb is a custom node that applies neural reverb processing directly to latent representations of images. Instead of processing audio signals, it creates spatial "echo" and reflection effects on encoded image features using convolutional neural networks and attention mechanisms.
+
+## How It Works
+
+The implementation uses a `LatentReverb` neural network that operates in the latent space of diffusion models:
+
+### Core Architecture
+
+- **Reflection System**: Creates multiple delayed reflections using learnable parameters for weights, delays, and diffusion
+- **Spatial Processing**: Uses 2D convolutions to process spatial features and maintain image coherence
+- **Attention Mechanism**: Applies multi-head attention for spatial coherence across the image
+- **Feedback Network**: Implements a feedback loop that creates increasingly complex reflection patterns
+- **Dampening Network**: Frequency-dependent decay using learned convolutional layers
+
+### Key Components
+
+1. **Delay Line**: Creates spatially shifted versions of the input using `torch.roll` with fade masks
+2. **Reflection Processing**: Each reflection is processed through convolutional layers and scaled by decay rates
+3. **Spatial Attention**: Multi-head attention ensures spatial coherence across the image
+4. **Adaptive Scaling**: Automatically adjusts effect strength based on the number of reflections
+
+### Technical Implementation
+
+The system operates on 4D tensors `[Batch, Channels, Height, Width]` and:
+- Scales delays by room size and reflection count for consistent visual impact
+- Applies exponential decay to each reflection layer
+- Uses learnable parameters for reflection weights, delays, and diffusion
+- Implements cross-channel feedback for complex interaction patterns
+- Applies post-processing effects like blur, edge enhancement, and contrast adjustment
+
+## Features
+
+- **Neural Reverb Processing**: AI-powered reverb effects in latent space
+- **Spatial Echo Effects**: Creates realistic spatial reflections and echoes
+- **Learnable Parameters**: Automatically optimizes reflection patterns
+- **Adaptive Scaling**: Maintains consistent visual impact across different settings
+- **Real-time Processing**: Efficient GPU-accelerated computation
+- **ComfyUI Integration**: Seamless workflow integration with parameter controls
+
+## Node Parameters
+
+The `LatentReverb` node provides intuitive controls:
+
+- **`wet_mix`** (0.0-1.0): Balance between original and processed image
+- **`feedback`** (0.0-1.5): Controls reflection complexity and layering
+- **`room_size`** (0.05-4.0): Spatial scale of reflections and effects
+- **`num_reflections`** (2-32): Number of reflection layers for complexity
+- **`decay_rate`** (0.5-0.95): How quickly reflections fade over time
+
+## Usage Examples
+
+### Subtle Ambient Enhancement
+```
+wet_mix: 0.2
+feedback: 0.3
+room_size: 0.3
+num_reflections: 8
+decay_rate: 0.85
+```
+
+### Dramatic Echo Effects
+```
+wet_mix: 0.6
+feedback: 0.8
+room_size: 2.0
+num_reflections: 24
+decay_rate: 0.7
+```
+
+### Natural Room Reverb
+```
+wet_mix: 0.4
+feedback: 0.5
+room_size: 1.0
+num_reflections: 16
+decay_rate: 0.8
+```
+
+## Installation
 
 1. Install [ComfyUI](https://docs.comfy.org/get_started).
 1. Install [ComfyUI-Manager](https://github.com/ltdrdata/ComfyUI-Manager)
 1. Look up this extension in ComfyUI-Manager. If you are installing manually, clone this repository under `ComfyUI/custom_nodes`.
 1. Restart ComfyUI.
-
-# Features
-
-- A list of features
 
 ## Develop
 
@@ -42,8 +118,7 @@ git push
 
 ## Writing custom nodes
 
-An example custom node is located in [node.py](src/latent_reverb/nodes.py). To learn more, read the [docs](https://docs.comfy.org/essentials/custom_node_overview).
-
+The main implementation is located in [nodes.py](src/latent_reverb/nodes.py). The `LatentReverb` class implements the neural network architecture, while `LatentReverbNode` provides the ComfyUI interface. To learn more about custom nodes, read the [docs](https://docs.comfy.org/essentials/custom_node_overview).
 
 ## Tests
 
