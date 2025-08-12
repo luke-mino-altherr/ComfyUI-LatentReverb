@@ -50,9 +50,9 @@ class LatentReverb(nn.Module):
         b, c, h, w = x.shape
 
         # Convert delay parameter to meaningful pixel shifts
-        # Multiply delay by 4 for x-axis, by 2 for y-axis for more noticeable effect
-        x_shift = int(delay * 4)
-        y_shift = int(delay * 2)
+        # Make the shifts more dramatic and visible
+        x_shift = int(delay * 2)  # Increased from 4 to 2 for more visible effect
+        y_shift = int(delay * 1)  # Increased from 2 to 1 for more visible effect
 
         if x_shift == 0 and y_shift == 0:
             return x
@@ -62,17 +62,17 @@ class LatentReverb(nn.Module):
 
         # Create fade mask for shifted regions to make the effect more natural
         # This creates a gradual fade at the edges where the roll wraps around
-        fade_width = min(2, min(h, w) // 16)  # Very small fade width for minimal effect
+        fade_width = min(4, min(h, w) // 8)  # Increased fade width for more natural effect
 
         if fade_width > 0:
             # Create fade mask for height (y-axis)
             if y_shift != 0:
                 y_fade = torch.ones(h, device=x.device)
                 y_fade[:fade_width] = torch.linspace(
-                    0.8, 1.0, fade_width, device=x.device
-                )  # Less aggressive fade
+                    0.6, 1.0, fade_width, device=x.device
+                )  # More aggressive fade for stronger effect
                 y_fade[-fade_width:] = torch.linspace(
-                    1.0, 0.8, fade_width, device=x.device
+                    1.0, 0.6, fade_width, device=x.device
                 )
                 y_fade = y_fade.view(1, 1, h, 1)
                 shifted = shifted * y_fade
@@ -81,10 +81,10 @@ class LatentReverb(nn.Module):
             if x_shift != 0:
                 x_fade = torch.ones(w, device=x.device)
                 x_fade[:fade_width] = torch.linspace(
-                    0.8, 1.0, fade_width, device=x.device
-                )  # Less aggressive fade
+                    0.6, 1.0, fade_width, device=x.device
+                )  # More aggressive fade for stronger effect
                 x_fade[-fade_width:] = torch.linspace(
-                    1.0, 0.8, fade_width, device=x.device
+                    1.0, 0.6, fade_width, device=x.device
                 )
                 x_fade = x_fade.view(1, 1, 1, w)
                 shifted = shifted * x_fade
@@ -104,14 +104,16 @@ class LatentReverb(nn.Module):
         Args:
             x: Input latent tensor [B, C, H, W]
             wet_mix: Dry/wet mix ratio (0=dry, 1=wet)
-            feedback: Feedback amount for reflections
-            room_size: Controls reflection pattern and delays
+            feedback: Feedback amount for reflections (0=no feedback, 1=strong feedback)
+            room_size: Controls reflection pattern and delays (0.1=small room, 2.0=large room)
         """
         b, c, h, w = x.shape
         dry_signal = x.clone()
 
-        # Scale delays by room size - multiply by additional factor of 3.0 for more dramatic effect
-        scaled_delays = self.reflection_delays * room_size * 3.0
+        # Scale delays by room size - make room_size have much more dramatic effect
+        # Base delays are 1-16, so room_size=2.0 will give delays of 2-32
+        # Multiply by additional factor to make the effect more visible
+        scaled_delays = self.reflection_delays * room_size * 8.0
 
         # Initialize accumulator
         wet_signal = torch.zeros_like(x)
@@ -123,9 +125,10 @@ class LatentReverb(nn.Module):
         # Create multiple reflections
         for i in range(self.num_reflections):
             delay = scaled_delays[i]
-            weight = torch.sigmoid(self.reflection_weights[i]) * (
-                0.6**i
-            )  # Slower decay for stronger reflections
+            # Make reflection weights decay more slowly and be more influenced by feedback
+            base_weight = torch.sigmoid(self.reflection_weights[i])
+            # Slower decay: use 0.8 instead of 0.6 for stronger later reflections
+            weight = base_weight * (0.8**i) * (1.0 + feedback * 0.5)
 
             # Create delayed reflection
             reflection = self.create_delay_line(feedback_buffer, delay)
@@ -137,17 +140,60 @@ class LatentReverb(nn.Module):
             damping = self.dampen_net(reflection)
             reflection = reflection * damping
 
-            # Accumulate weighted reflection with 2.0 multiplier for stronger effect
-            wet_signal = wet_signal + reflection * weight * 2.0
+            # Accumulate weighted reflection with stronger effect
+            wet_signal = wet_signal + reflection * weight * 3.0
 
-            # Update feedback buffer with some of the reflection - increased from 0.1 to 0.3 for stronger feedback
-            feedback_buffer = feedback_buffer + reflection * feedback * 0.3
+            # Update feedback buffer with much stronger feedback effect
+            # Now feedback parameter directly controls how much of each reflection feeds back
+            # Add some non-linearity to make feedback more interesting
+            feedback_amount = feedback * 0.8
+            if feedback > 0.6:  # High feedback creates more complex patterns
+                feedback_amount *= 1.5
+            feedback_buffer = feedback_buffer + reflection * feedback_amount
+
+            # Add some cross-channel feedback for more complex effects
+            if feedback > 0.4 and i > 0:
+                # Mix some of the previous reflection into the feedback buffer
+                prev_reflection = self.create_delay_line(feedback_buffer, delay * 0.5)
+                feedback_buffer = feedback_buffer + prev_reflection * feedback * 0.2
 
         # Apply spatial attention for coherence
         # Reshape for attention
         wet_flat = wet_signal.view(b, c, -1).transpose(1, 2)  # [B, HW, C]
         attended, _ = self.spatial_attention(wet_flat, wet_flat, wet_flat)
         wet_signal = attended.transpose(1, 2).view(b, c, h, w)
+
+        # Add subtle blur effect to simulate acoustic diffusion
+        # This makes the reverb effect more visible
+        if room_size > 0.5:  # Only apply blur for larger rooms
+            blur_kernel_size = max(3, int(room_size * 2))
+            if blur_kernel_size % 2 == 0:
+                blur_kernel_size += 1  # Ensure odd kernel size
+            blur_kernel_size = min(blur_kernel_size, 9)  # Cap at reasonable size
+            
+            # Apply Gaussian blur with room_size dependent sigma
+            sigma = room_size * 0.5
+            wet_signal = F.gaussian_blur2d(wet_signal, kernel_size=blur_kernel_size, sigma=sigma)
+
+        # Add edge enhancement for more visible reverb effects
+        # This helps make the spatial shifts more apparent
+        if feedback > 0.3:
+            # Create edge detection kernel
+            edge_kernel = torch.tensor([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]], 
+                                     dtype=torch.float32, device=wet_signal.device).view(1, 1, 3, 3)
+            edge_kernel = edge_kernel.repeat(c, 1, 1, 1)
+            
+            # Apply edge detection with feedback-dependent strength
+            edge_response = F.conv2d(wet_signal, edge_kernel, padding=1, groups=c)
+            edge_strength = feedback * 0.1  # Subtle edge enhancement
+            wet_signal = wet_signal + edge_response * edge_strength
+
+        # Add contrast enhancement for more dramatic effects
+        if room_size > 1.0:
+            # Increase contrast in the wet signal for larger rooms
+            mean_val = wet_signal.mean()
+            contrast_factor = 1.0 + (room_size - 1.0) * 0.3
+            wet_signal = (wet_signal - mean_val) * contrast_factor + mean_val
 
         # Combine with spatial features and output
         combined = torch.cat([spatial_features, wet_signal], dim=1)
@@ -185,6 +231,7 @@ class LatentReverbNode:
                         "max": 0.8,
                         "step": 0.01,
                         "display": "slider",
+                        "description": "Controls how much each reflection feeds back into the system. Higher values create more complex, layered effects. Values above 0.6 create increasingly complex patterns.",
                     },
                 ),
                 "room_size": (
@@ -195,6 +242,7 @@ class LatentReverbNode:
                         "max": 2.0,
                         "step": 0.1,
                         "display": "slider",
+                        "description": "Controls the spatial scale of reflections. Small values (0.1-0.5) create subtle shifts, large values (1.0-2.0) create dramatic spatial effects and blur.",
                     },
                 ),
                 "num_reflections": (
