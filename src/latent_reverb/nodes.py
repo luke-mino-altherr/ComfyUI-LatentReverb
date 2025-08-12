@@ -62,7 +62,9 @@ class LatentReverb(nn.Module):
 
         # Create fade mask for shifted regions to make the effect more natural
         # This creates a gradual fade at the edges where the roll wraps around
-        fade_width = min(4, min(h, w) // 8)  # Increased fade width for more natural effect
+        fade_width = min(
+            4, min(h, w) // 8
+        )  # Increased fade width for more natural effect
 
         if fade_width > 0:
             # Create fade mask for height (y-axis)
@@ -170,19 +172,33 @@ class LatentReverb(nn.Module):
             if blur_kernel_size % 2 == 0:
                 blur_kernel_size += 1  # Ensure odd kernel size
             blur_kernel_size = min(blur_kernel_size, 9)  # Cap at reasonable size
-            
+
             # Apply Gaussian blur with room_size dependent sigma
+            # Use a compatible blur method that works across PyTorch versions
             sigma = room_size * 0.5
-            wet_signal = F.gaussian_blur2d(wet_signal, kernel_size=blur_kernel_size, sigma=sigma)
+
+            # Create a simple averaging blur kernel as fallback
+            blur_kernel = torch.ones(
+                1, 1, blur_kernel_size, blur_kernel_size, device=wet_signal.device
+            ) / (blur_kernel_size * blur_kernel_size)
+            blur_kernel = blur_kernel.repeat(c, 1, 1, 1)
+
+            # Apply the blur
+            wet_signal = F.conv2d(
+                wet_signal, blur_kernel, padding=blur_kernel_size // 2, groups=c
+            )
 
         # Add edge enhancement for more visible reverb effects
         # This helps make the spatial shifts more apparent
         if feedback > 0.3:
             # Create edge detection kernel
-            edge_kernel = torch.tensor([[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]], 
-                                     dtype=torch.float32, device=wet_signal.device).view(1, 1, 3, 3)
+            edge_kernel = torch.tensor(
+                [[-1, -1, -1], [-1, 8, -1], [-1, -1, -1]],
+                dtype=torch.float32,
+                device=wet_signal.device,
+            ).view(1, 1, 3, 3)
             edge_kernel = edge_kernel.repeat(c, 1, 1, 1)
-            
+
             # Apply edge detection with feedback-dependent strength
             edge_response = F.conv2d(wet_signal, edge_kernel, padding=1, groups=c)
             edge_strength = feedback * 0.1  # Subtle edge enhancement
