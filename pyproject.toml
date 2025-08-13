@@ -32,15 +32,19 @@ dev = [
 ]
 
 [project.urls]
-bugs = "https://github.com/luke-mino-altherr/latent_reverb/issues"
-homepage = "https://github.com/luke-mino-altherr/latent_reverb"
+Repository = "https://github.com/luke-mino-altherr/ComfyUI-LatentReverb"
+Documentation = "https://github.com/luke-mino-altherr/ComfyUI-LatentReverb/wiki"
+BugTracker = "https://github.com/luke-mino-altherr/ComfyUI-LatentReverb/issues"
 
 
 [tool.comfy]
 PublisherId = "luke"
 DisplayName = "ComfyUI-Latent-Reverb"
 Icon = ""
-
+Description = "Creates spatial echo and ambient effects by applying reverb-like processing directly in latent space"
+Tags = ["latent", "transform", "reverb", "audio-effects", "spatial-processing"]
+Repository = "https://github.com/luke-mino-altherr/ComfyUI-LatentReverb"
+includes = []
 
 
 
